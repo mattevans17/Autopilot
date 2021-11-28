@@ -1,14 +1,70 @@
+from math import sqrt, pow
 import numpy as np
 import cv2
 
-FRAME_SIZE = (640, 480)
 VIDEO_URL = 'media/video.mp4'
 BLUR_MATRIX = (1, 1)
 
 CLASSIFIER_POINTS_FREQ = 40
-CLASSIFIER_MIN_LANE_WIDTH = 3
-CLASSIFIER_OFFSET_X_MAX = 50
-CLASSIFIER_CLASS_MAX_SIZE = 20
+CLASSIFIER_MIN_LANE_WIDTH = 2
+CLASSIFIER_CLASS_MIN_SIZE = 5
+
+LANE_LEFT_POS = 0
+LANE_RIGHT_POS = 1
+LANE_POINTS_MAX_DIST = 50
+
+FRAME_SIZE = (640, 480)
+FRAME_MIDDLE_X = FRAME_SIZE[0] // 2
+
+
+class Lane:
+    def __init__(self):
+        self.position = -1
+        self.points = []
+
+    def add_point(self, point):
+        self.points.append(point)
+
+    def get_last_point(self):
+        last_point_idx = len(self.points) - 1
+        return self.points[last_point_idx]
+
+    @staticmethod
+    def calc_distance(point_1, point_2):
+        offset_x = abs(point_1[0] - point_2[0])
+        offset_y = abs(point_1[1] - point_2[1])
+        return int(sqrt(pow(offset_x, 2) + pow(offset_y, 2)))
+
+    def check_point(self, point):
+        if self.calc_distance(self.get_last_point(), point) <= LANE_POINTS_MAX_DIST:
+            return True
+        return False
+
+
+class Model:
+    def __init__(self):
+        self.lanes = []
+
+    def add_lane(self):
+        self.lanes.append(Lane())
+        return len(self.lanes) - 1
+
+
+class Classifier:
+    def __init__(self, model):
+        self.model = model
+
+    def classify(self, point):
+        point_included = False
+        for lane_idx in range(len(self.model.lanes)):
+            curr_lane = self.model.lanes[lane_idx]
+            if curr_lane.check_point(point):
+                curr_lane.add_point(point)
+                point_included = True
+                break
+        if not point_included:
+            lane_idx = self.model.add_lane()
+            self.model.lanes[lane_idx].add_point(point)
 
 
 def gauassian_blur(frame):
@@ -47,50 +103,30 @@ def resize_frame(frame):
     return cv2.resize(frame, FRAME_SIZE)
 
 
-def lane_points(original):
-    classes = []
-    frame = np.copy(original)
-    frame[frame == 255] = 1
-    shape = np.array(frame).shape
-    offset = shape[0] // CLASSIFIER_POINTS_FREQ
-    points = []
-    for idx in range(shape[0]):
-        if idx % offset == 0:
-            row = frame[idx]
-            matches_num = 0
+def binary_frame(frame):
+    copied = np.copy(frame)
+    copied[frame == 255] = 1
+    return copied
 
-            for idx_1 in range(shape[1]):
-                curr_value = row[idx_1]
+
+def classifier_points(frame):
+    model = Model()
+    shape = np.array(frame).shape
+    classifier = Classifier(model)
+    offset_y = shape[1] // CLASSIFIER_POINTS_FREQ
+    for frame_y in reversed(range(shape[0])):
+        if frame_y % offset_y == 0:
+            row = frame[frame_y]
+            matches_num = 0
+            for frame_x in range(shape[1]):
+                curr_value = row[frame_x]
                 if curr_value == 1:
                     matches_num += 1
-
                 elif matches_num >= CLASSIFIER_MIN_LANE_WIDTH:
-                    point = (idx_1, idx)
-
-                    if idx == 0:
-                        classes.append([point])
-
-                    else:
-                        current_include_in_class = False
-                        for class_idx in range(len(classes)):
-                            try:
-                                prev_pt_x = classes[class_idx][(idx // offset) - 1][0]
-
-                            except:
-                                prev_pt_x = classes[class_idx][len(classes[class_idx])-1][0]
-
-                            if abs(point[0] - prev_pt_x) < CLASSIFIER_OFFSET_X_MAX:
-                                classes[class_idx].append(point)
-                                current_include_in_class = True
-                                break
-
-                        if not current_include_in_class:
-                            classes.append([point])
-
+                    point = (frame_x, frame_y)
+                    classifier.classify(point)
                     matches_num = 0
-
-    classes = [_class for _class in classes if len(_class) > CLASSIFIER_CLASS_MAX_SIZE]
-    return classes
+    return model
 
 
 def main():
@@ -102,25 +138,32 @@ def main():
             break
 
         resized = resize_frame(frame)
-        blurred = gauassian_blur(resized)
-        yw_filtered = yw_filter(blurred)
+        yw_filtered = yw_filter(resized)
         top_view = get_top_view(yw_filtered)
         original_top_view = get_top_view(resized)
 
-        pts_classes = lane_points(top_view)
+        model = classifier_points(binary_frame(top_view))
         mask = np.zeros(original_top_view.shape, dtype=np.uint8)
-        for class_idx in range(len(pts_classes)):
-            for point in pts_classes[class_idx]:
+
+        for idx in range(len(model.lanes)):
+            for point in model.lanes[idx].points:
                 color = (0, 0, 255)
-                if class_idx == 0:
+                if idx == 0:
                     color = (0, 255, 0)
-                elif class_idx == 1:
+                elif idx == 1:
                     color = (255, 0, 0)
+                elif idx == 2:
+                    color = (255, 255, 0)
+                elif idx == 3:
+                    color = (255, 0, 255)
+                elif idx == 4:
+                    color = (0, 255, 255)
+                elif idx == 5:
+                    color = (255, 255, 255)
                 mask = cv2.circle(
                     mask, point, radius=5,
                     color=color, thickness=-1
                 )
-
         cv2.imshow('frame', original_top_view)
         cv2.imshow('mask', mask)
 
